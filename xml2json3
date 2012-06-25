@@ -1,0 +1,189 @@
+#!/usr/bin/env python3
+
+"""
+xml2json.py  Convert XML to JSON or properly formatted JSON to XML
+
+This is a rewrite of xml2json by Hay Kranen.
+The JSON output from XML should be the same as his version.
+The JSON to XML output has been adjusted to more accurately differentiate
+attributes from elements.
+
+The format required to convert JSON to XML is the same as the output of
+the XML to JSON conversion.
+
+These are other features:
+
+Uses python3 ---> will not work under python2
+Use standard json library.
+Use argparse instead of optparse.
+Incrementally parse files to use less resources and allow parsing of large
+files.
+Overall improved memory management.
+Attempted to clarify options and function names.
+
+Author: Trey Jones <github.com/trey-jones>
+June 19, 2012
+
+Docstring of the original xml2json:
+Relies on ElementTree for the XML parsing.  This is based on
+pesterfish.py but uses a different XML->JSON mapping.
+The XML->JSON mapping is described at
+http://www.xml.com/pub/a/2006/05/31/converting-between-xml-and-json.html
+
+Rewritten to a command line utility by Hay Kranen < github.com/hay >
+
+XML                              JSON
+<e/>                             "e": null
+<e>text</e>                      "e": "text"
+<e name="value" />               "e": { "@name": "value" }
+<e name="value">text</e>         "e": { "@name": "value", "#text": "text" }
+<e> <a>text</a ><b>text</b> </e> "e": { "a": "text", "b": "text" }
+<e> <a>text</a> <a>text</a> </e> "e": { "a": ["text", "text"] }
+<e> text <a>text</a> </e>        "e": { "#text": "text", "a": "text" }
+
+This is very similar to the mapping used for Yahoo Web Services
+(http://developer.yahoo.com/common/json.html#xml).
+
+This is a mess in that it is so unpredictable -- it requires lots of testing
+(e.g. to see if values are lists or strings or dictionaries).  For use
+in Python this could be vastly cleaner.  Think about whether the internal
+form can be more self-consistent while maintaining good external characteristics
+for the JSON.
+
+Look at the Yahoo version closely to see how it works.  Maybe can adopt
+that completely if it makes more sense...
+
+R. White, 2006 November 6
+"""
+
+import xml.etree.cElementTree as ET
+import json, argparse
+from os.path import getsize
+
+
+##
+#   Take an instance of iterparse and recursively iterate on each element.
+#   Convert elements to Python dictionary
+#
+#   @param Element elem Pass the root of an xml document (start event) to parse the whole document.
+#   @return tuple,2 (tag, Python dictionary of subelements and attributes as well as text and tail)
+##
+def elem_to_dict(elem):
+    """
+    Convert an instance of xml.etree.cElementTree.Element to
+    a python dictionary.
+    """
+
+    tag = elem.tag.strip()
+    tail = elem.tail
+    text = elem.text
+    attributes = elem.keys()
+    parsed_elem = {}
+
+    event = 'start'
+
+    ##
+    #   recursively parses subelements
+    #   each time it returns an element has 'ended'
+    #   so the next event will either start a new subelement
+    #   or end this element
+    #   TODO namespaces?
+    ##
+    while event == 'start':
+        event, next_element = next(doc)
+        if event == 'end':
+            break
+
+        sub_tag, contents = elem_to_dict(next_element)
+
+        if not sub_tag in parsed_elem.keys():
+            parsed_elem[sub_tag] = []
+
+        parsed_elem[sub_tag].append(contents)
+
+    ## all subelements parsed, add everything else
+    if tail != None:
+        tail = tail.strip()
+        if tail != '':
+            parsed_elem['tail'] = tail
+
+    if text != None:
+        text = text.strip()
+        if text != '':
+            parsed_elem['text'] = text
+
+    for a in attributes:
+        value = elem.get(a)
+
+        if value != None:
+            parsed_elem[a] = value
+
+    ## all finished parsing the element, so let's get rid of the contents
+    ## TODO make sure everything including root is getting cleared
+    elem.clear()
+
+    return (tag, parsed_elem)
+
+
+##
+#   @param string file Path and filename of the xml document to be parsed.
+#   @return string JSON string of XML file
+#   TODO: see about writing JSON to file as it is parsed?
+##
+def xml_to_json(file):
+    """
+    Convert a properly formatted XML file to a JSON string.
+    """
+
+    global doc
+    doc = ET.iterparse(file, events=('start', 'end'))
+
+    event, elem = next(doc)
+
+    if event == 'start':  # it should always == start
+        tag, parsed = elem_to_dict(elem)
+    else:
+        raise Exception('Invalid XML format')
+
+    ## dump everything in a dicionary
+    ## should the subelements be in a list as well?
+    main_dict = {tag: parsed}
+
+    return json.dumps(main_dict)
+
+
+##
+#   @param string file Path and filename of the json document to be parsed.
+#   @return string XML string
+##
+def json_to_xml(file):
+    pass
+
+
+##
+#   Execute!
+##
+def main():
+    p = argparse.ArgumentParser(description='Convert a file from XML to JSON or JSON to XML.')
+    p.add_argument('in_file', metavar='IN', type=str, help='Path to the file that will be parsed.')
+    p.add_argument('out_file', metavar='OUT', type=str, help='File to write output.  Pass "console" to print to stdout')
+    p.add_argument('-m', '--mode', help='"xml" or "json" - This determines the output.', default='json')
+
+    args = vars(p.parse_args())
+
+    if args['mode'] == 'json':
+        output = xml_to_json(args['in_file'])
+    elif args['mode'] == 'xml':
+        output = json_to_xml(args['in_file'])
+    else:
+        raise Exception('Invalid mode.  Type "xml2json3 -h" for more information')
+
+    if args['out_file'] == 'console':
+        print(output)
+    else:
+        with open(args['out_file'], 'w', encoding='utf-8') as out:
+            out.write(output)
+
+
+if __name__ == '__main__':
+    main()
