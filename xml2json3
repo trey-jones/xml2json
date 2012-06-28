@@ -57,7 +57,7 @@ R. White, 2006 November 6
 """
 
 import xml.etree.cElementTree as ET
-import json, argparse
+import json, argparse, tempfile
 from os.path import getsize
 
 
@@ -74,10 +74,13 @@ def elem_to_dict(elem):
     a python dictionary.
     """
 
+    global doc, parsed_elements
+
     tag = elem.tag.strip()
     tail = elem.tail
     text = elem.text
     attributes = elem.keys()
+
     parsed_elem = {}
 
     event = 'start'
@@ -92,6 +95,9 @@ def elem_to_dict(elem):
     while event == 'start':
         event, next_element = next(doc)
         if event == 'end':
+            parsed_elements += 1
+            next_element.clear()
+            display_progress(parsed_elements)
             break
 
         sub_tag, contents = elem_to_dict(next_element)
@@ -125,39 +131,171 @@ def elem_to_dict(elem):
     return (tag, parsed_elem)
 
 
+def large_elem_to_dict(elem, container, temp_dir):
+    global doc, parsed_elements
+
+    tag = elem.tag.strip()
+    tail = elem.tail
+    text = elem.text
+    attributes = elem.keys()
+
+    subelements = {}
+    subelement_order = []
+
+    event = 'start'
+
+    while event == 'start':
+        event, next_element = next(doc)
+        if event == 'end':
+            parsed_elements += 1
+            display_progress(parsed_elements)
+            break
+
+        if not next_element.tag in subelements:
+            subelements[next_element.tag] = tempfile.SpooledTemporaryFile(max_size=10000000, dir=temp_dir)  # max size is 10M, buffering from python docs
+            subelements[next_element.tag].write(utf_encode('['))  # cast to bytes to write binary
+            subelement_order.append(next_element.tag)  # TODO make this better
+
+        large_elem_to_dict(next_element, subelements[next_element.tag], temp_dir)
+
+    container.write(utf_encode('{'))
+
+    # ghetto json writing
+    no_comma = True
+    for tag_name in subelement_order:
+        # leave the comma off the first subelement
+        if not no_comma:
+            container.write(utf_encode(','))
+        else:
+            no_comma = False
+
+        container.write(utf_encode('"' + tag_name + '":'))  # replace with json.dump?
+        iter_transfer(subelements[tag_name], container)
+        container.seek(-1, 2)  # remove trailing comma - it takes 2 bytes here because? probably EOF from iter_transfer
+        container.write(utf_encode(']'))
+
+    string_values = {}
+    string_value_order = []  # TODO make this better
+
+    if text != None:
+        text = text.strip()
+        if text != '':
+            string_values['text'] = text
+            string_value_order.append('text')
+
+    if tail != None:
+        tail = tail.strip()
+        if tail != '':
+            string_values['tail'] = tail
+            string_value_order.append('tail')
+
+    for a in attributes:
+        value = elem.get(a)
+        if value != None:
+            string_values[a] = value
+            string_value_order.append(a)
+
+    # no comma will be false if there were any subelements
+    for key in string_value_order:
+        if not no_comma:
+            container.write(utf_encode(','))
+        else:
+            no_comma = False
+
+        container.write(utf_encode('"' + key + '":"' + string_values[key] + '"'))
+
+    elem.clear()
+    container.write(utf_encode('},'))
+
+
+def iter_transfer(from_obj, to_obj):
+    from_obj.seek(0)
+    while True:
+        data = from_obj.read(50000)
+
+        if len(data) < 1:
+            break
+
+        to_obj.write(data)
+
+
+def utf_encode(data):
+    return bytes(data, encoding='utf-8')
+
+
 ##
 #   @param string file Path and filename of the xml document to be parsed.
 #   @return string JSON string of XML file
 #   TODO: see about writing JSON to file as it is parsed?
 ##
-def xml_to_json(file):
+def xml_to_json(infile, outfile):
     """
     Convert a properly formatted XML file to a JSON string.
     """
 
+    analyze_xml(infile)
+
     global doc
-    doc = ET.iterparse(file, events=('start', 'end'))
+    doc = ET.iterparse(infile, events=('start', 'end'))
 
     event, elem = next(doc)
 
-    if event == 'start':  # it should always == start
+    if not is_large_file(infile):
         tag, parsed = elem_to_dict(elem)
+
+        with open(outfile) as out:
+            json.dump({tag: parsed}, out, separators=(',', ':'))
+
     else:
-        raise Exception('Invalid XML format')
+        with tempfile.TemporaryDirectory() as temp_dir:
 
-    ## dump everything in a dicionary
-    ## should the subelements be in a list as well?
-    main_dict = {tag: parsed}
+            with open(outfile, 'w+b') as out:
+                out.write(utf_encode('{"' + elem.tag + '":'))
+                large_elem_to_dict(elem, out, temp_dir)
 
-    return json.dumps(main_dict)
+                # remove trailing comma  TODO make this more interesting
+                out.seek(-1, 2)
+                out.write(utf_encode('}'))
 
 
 ##
 #   @param string file Path and filename of the json document to be parsed.
 #   @return string XML string
 ##
-def json_to_xml(file):
+def json_to_xml(infile, outfile):
     pass
+
+
+def is_large_file(file):
+    return getsize(file) > 100000000  # 100M approximately
+
+
+def analyze_xml(file):
+    print('Analyzing input file.')
+
+    check = ET.iterparse(file, events=('start', 'end'))
+    event, root = next(check)
+
+    global parsed_elements
+    parsed_elements = 0
+    global total_elements
+    total_elements = 0
+
+    for event, elem in check:
+        if event == 'end':
+            total_elements += 1
+            elem.clear()
+
+    root.clear()
+
+    print('Found XML with ' + str(total_elements) + ' total elements.')
+    print('Beginning conversion...')
+
+
+def display_progress(i):
+    global total_elements
+    if i % 100000 == 0:
+        print('\r{} elements parsed of {}.'.format(i, total_elements), end='')
 
 
 ##
@@ -172,17 +310,11 @@ def main():
     args = vars(p.parse_args())
 
     if args['mode'] == 'json':
-        output = xml_to_json(args['in_file'])
+        xml_to_json(args['in_file'], args['out_file'])
     elif args['mode'] == 'xml':
-        output = json_to_xml(args['in_file'])
+        json_to_xml(args['in_file'], args['out_file'])
     else:
         raise Exception('Invalid mode.  Type "xml2json3 -h" for more information')
-
-    if args['out_file'] == 'console':
-        print(output)
-    else:
-        with open(args['out_file'], 'w', encoding='utf-8') as out:
-            out.write(output)
 
 
 if __name__ == '__main__':
