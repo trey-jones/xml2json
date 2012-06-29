@@ -240,22 +240,15 @@ def xml_to_json(infile, outfile):
 
     event, elem = next(doc)
 
-    if not is_large_file(infile):
-        tag, parsed = elem_to_dict(elem)
+    with tempfile.TemporaryDirectory() as temp_dir:
 
-        with open(outfile) as out:
-            json.dump({tag: parsed}, out, separators=(',', ':'))
+        with open(outfile, 'w+b') as out:
+            out.write(utf_encode('{"' + elem.tag + '":'))
+            large_elem_to_dict(elem, out, temp_dir)
 
-    else:
-        with tempfile.TemporaryDirectory() as temp_dir:
-
-            with open(outfile, 'w+b') as out:
-                out.write(utf_encode('{"' + elem.tag + '":'))
-                large_elem_to_dict(elem, out, temp_dir)
-
-                # remove trailing comma  TODO make this more interesting
-                out.seek(-1, 2)
-                out.write(utf_encode('}'))
+            # remove trailing comma  TODO make this more interesting
+            out.seek(-1, 2)
+            out.write(utf_encode('}'))
 
 
 ##
