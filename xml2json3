@@ -250,6 +250,9 @@ def xml_to_json(infile, outfile):
             out.seek(-1, 2)
             out.write(utf_encode('}'))
 
+    global parsed_elements, total_elements
+    print('\n{} elements processed out of {} total.'.format(parsed_elements, total_elements))
+
 
 ##
 #   @param string file Path and filename of the json document to be parsed.
@@ -287,8 +290,19 @@ def analyze_xml(file):
 
 def display_progress(i):
     global total_elements
-    if i % 100000 == 0:
-        print('\r{} elements parsed of {}.'.format(i, total_elements), end='')
+    percent = 0
+
+    for i in range(total_elements + 1):
+        next_percent = floor(i / total_elements * 100)
+        if next_percent > percent:
+            print('\r[', end='')
+
+            for i in range(percent):
+                print('#', end='')
+            for i in range(percent, 100):
+                print(' ', end='')
+
+            print(']   {}%',format(percent), end='')
 
 
 ##
